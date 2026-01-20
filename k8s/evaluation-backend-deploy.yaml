@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluation-backend
+  namespace: bmi-miva
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluation-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: evaluation-backend
+    spec:
+      tolerations:
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: backend
+          # 这里先随便填一个现有镜像，后续 CD 会 set image 覆盖
+          image: harbor.vico-lab.com:4443/evaluation/evaluation-backend:v3
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eval-db-secret
+                  key: DATABASE_URL
+          volumeMounts:
+            - mountPath: /mnt/data.miva
+              name: data-miva
+            - mountPath: /dev/shm
+              name: shm-volume
+      volumes:
+        - name: data-miva
+          persistentVolumeClaim:
+            claimName: pvc-data.wfs.miva
+        - name: shm-volume
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
