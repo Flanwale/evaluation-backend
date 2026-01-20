@@ -1,0 +1,46 @@
+name: build-and-deploy-backend
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build_deploy:
+    runs-on: self-hosted
+
+    env:
+      IMAGE_REPO: evaluation/evaluation-backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set tag
+        run: |
+          echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Docker login Harbor
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ secrets.HARBOR_REGISTRY }} -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+
+      - name: Build image
+        run: |
+          docker build -t ${{ secrets.HARBOR_REGISTRY }}/${IMAGE_REPO}:${TAG} .
+
+      - name: Push image
+        run: |
+          docker push ${{ secrets.HARBOR_REGISTRY }}/${IMAGE_REPO}:${TAG}
+
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Deploy (set image + rollout)
+        run: |
+          kubectl -n bmi-miva set image deployment/evaluation-backend backend=${{ secrets.HARBOR_REGISTRY }}/${IMAGE_REPO}:${TAG}
+          kubectl -n bmi-miva rollout status deployment/evaluation-backend --timeout=180s
+
