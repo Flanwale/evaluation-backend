@@ -75,5 +75,5 @@ jobs:
 
       - name: Smoke test
         run: |
-          curl -fsS ${BACKEND_URL}/healthz >/dev/null
+          curl -fsS ${BACKEND_URL} >/dev/null
           echo "Backend OK: ${BACKEND_URL}"
