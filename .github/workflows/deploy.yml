@@ -2,11 +2,11 @@ name: build-and-deploy-backend
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
   workflow_dispatch:
 
 concurrency:
-  group: deploy-backend-main
+  group: deploy-backend-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -17,10 +17,13 @@ jobs:
       REGISTRY: harbor.vico-lab.com:4443
       IMAGE_REPO: evaluation/evaluation-backend
       NAMESPACE: bmi-miva
-      DEPLOYMENT: evaluation-backend
       CONTAINER: backend
-      BACKEND_URL: http://172.16.200.95:8000  # 可根据实际情况调整
-      FRONTEND_ORIGIN: http://evaluation-frontend-svc:3000  # 根据需要配置前端服务地址
+
+      # （可选）如果你后端确实在 docker build 阶段需要这些 build-arg，就保留
+      BACKEND_URL_PROD: http://172.16.200.95:8000
+      BACKEND_URL_DEV:  http://172.16.200.95:8000
+      FRONTEND_ORIGIN_PROD: http://evaluation-frontend-svc:3000
+      FRONTEND_ORIGIN_DEV:  http://evaluation-frontend-dev-svc:3000
 
     steps:
       - name: Ensure git exists (for checkout/submodules)
@@ -36,10 +39,25 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set tag (short sha)
+      - name: Set env by branch + tag
         run: |
           echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          echo "Using TAG=${GITHUB_SHA::7}"
+
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "DEPLOYMENT=evaluation-backend" >> $GITHUB_ENV
+            echo "POD_LABEL=app=evaluation-backend" >> $GITHUB_ENV
+            echo "SMOKE_URL=${BACKEND_URL_PROD}" >> $GITHUB_ENV
+            echo "BUILD_BACKEND_URL=${BACKEND_URL_PROD}" >> $GITHUB_ENV
+            echo "BUILD_FRONTEND_ORIGIN=${FRONTEND_ORIGIN_PROD}" >> $GITHUB_ENV
+          else
+            echo "DEPLOYMENT=evaluation-backend-dev" >> $GITHUB_ENV
+            echo "POD_LABEL=app=evaluation-backend-dev" >> $GITHUB_ENV
+            echo "SMOKE_URL=${BACKEND_URL_DEV}" >> $GITHUB_ENV
+            echo "BUILD_BACKEND_URL=${BACKEND_URL_DEV}" >> $GITHUB_ENV
+            echo "BUILD_FRONTEND_ORIGIN=${FRONTEND_ORIGIN_DEV}" >> $GITHUB_ENV
+          fi
+
+          echo "Using branch=${GITHUB_REF_NAME} TAG=${GITHUB_SHA::7} DEPLOYMENT=$DEPLOYMENT"
 
       - name: Docker login Harbor
         run: |
@@ -50,8 +68,8 @@ jobs:
         run: |
           docker build \
             -t ${REGISTRY}/${IMAGE_REPO}:${TAG} \
-            --build-arg BACKEND_URL=${BACKEND_URL} \
-            --build-arg FRONTEND_ORIGIN=${FRONTEND_ORIGIN} \
+            --build-arg BACKEND_URL=${BUILD_BACKEND_URL} \
+            --build-arg FRONTEND_ORIGIN=${BUILD_FRONTEND_ORIGIN} \
             .
 
       - name: Push image
@@ -71,9 +89,12 @@ jobs:
           kubectl -n ${NAMESPACE} set image deployment/${DEPLOYMENT} \
             ${CONTAINER}=${REGISTRY}/${IMAGE_REPO}:${TAG}
           kubectl -n ${NAMESPACE} rollout status deployment/${DEPLOYMENT} --timeout=180s
-          kubectl -n ${NAMESPACE} get pods -l app=evaluation-backend -o wide
+          kubectl -n ${NAMESPACE} get pods -l ${POD_LABEL} -o wide
 
-      - name: Smoke test
+      # 更稳：集群内 smoke，不依赖你 BACKEND_URL 在外网可达
+      - name: Smoke test (in-cluster)
         run: |
-          curl -fsS ${BACKEND_URL} >/dev/null
-          echo "Backend OK: ${BACKEND_URL}"
+          kubectl -n ${NAMESPACE} run curl-smoke-backend --rm -i --restart=Never \
+            --image=curlimages/curl:8.5.0 \
+            --command -- sh -lc 'curl -fsS http://evaluation-backend-svc:8000/ >/dev/null || curl -fsS http://evaluation-backend-svc:8000/docs >/dev/null'
+          echo "Backend service reachable in cluster"
