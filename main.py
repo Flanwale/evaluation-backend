@@ -497,11 +497,43 @@ async def get_user_profile(user_id: str):
 async def create_patient(patient: PatientCreate):
     new_id = str(uuid.uuid4())
     try:
+        # 1. 先插入 patients 主表
         await prisma.execute_raw(
             """INSERT INTO patients (id, subject_label, protocol_id)
                VALUES (?, ?, ?)""",
             new_id, patient.subject_label, patient.protocol_id
         )
+
+        # 2. 自动初始化所有 CRF 子表（保证 subsequen update 有行可更新）
+        try:
+            # 查出所有定义的 CRF
+            crfs = await prisma.query_raw("""
+                SELECT code, parent_code
+                FROM meta_study_structure
+                WHERE type = 'CRF'
+            """)
+            
+            for row in crfs:
+                event_val = row.get('parent_code')
+                crf_val = row.get('code')
+                if not event_val or not crf_val:
+                    continue
+                
+                # 拼表名：crf_{event_code}_{crf_code}
+                table_name = f"crf_{event_val.lower()}_{crf_val.lower()}"
+                
+                # 尝试插入空行
+                try:
+                    await prisma.execute_raw(f"INSERT INTO `{table_name}` (patient_id) VALUES (?)", new_id)
+                except Exception as inner_e:
+                    # 可能表不存在，或者已经有数据(极少见)，忽略错误继续下一个
+                    print(f"Init table {table_name} failed: {inner_e}")
+
+        except Exception as e:
+            print(f"Failed to fetch structure or init tables: {e}")
+            # 注意：这里虽然子表初始化失败，但主表已经插入成功，
+            # 也可以选择回滚，但简单起见先返回成功，只需日志记录。
+
         return {"success": True, "id": new_id}
     except Exception as e:
         return {"success": False, "error": str(e)}

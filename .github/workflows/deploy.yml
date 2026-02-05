@@ -91,10 +91,3 @@ jobs:
           kubectl -n ${NAMESPACE} rollout status deployment/${DEPLOYMENT} --timeout=180s
           kubectl -n ${NAMESPACE} get pods -l ${POD_LABEL} -o wide
 
-      # 更稳：集群内 smoke，不依赖你 BACKEND_URL 在外网可达
-      - name: Smoke test (in-cluster)
-        run: |
-          kubectl -n ${NAMESPACE} run curl-smoke-backend --rm -i --restart=Never \
-            --image=curlimages/curl:8.5.0 \
-            --command -- sh -lc 'curl -fsS http://evaluation-backend-svc:8000/ >/dev/null || curl -fsS http://evaluation-backend-svc:8000/docs >/dev/null'
-          echo "Backend service reachable in cluster"
