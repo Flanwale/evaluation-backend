@@ -504,35 +504,63 @@ async def create_patient(patient: PatientCreate):
             new_id, patient.subject_label, patient.protocol_id
         )
 
-        # 2. 自动初始化所有 CRF 子表（保证 subsequen update 有行可更新）
+        # 2. ✅ 自动初始化所有 CRF 子表：扫描数据库里所有 crf_% 表，逐表插入 (id, patient_id)
         try:
-            # 查出所有定义的 CRF
-            crfs = await prisma.query_raw("""
-                SELECT code, parent_code
-                FROM meta_study_structure
-                WHERE type = 'CRF'
-            """)
-            
-            for row in crfs:
-                event_val = row.get('parent_code')
-                crf_val = row.get('code')
-                if not event_val or not crf_val:
+            # 2.1 找到当前数据库下所有 crf_% 表
+            crf_tables = await prisma.query_raw("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name LIKE 'crf\\_%'
+            """) or []
+
+            for r in crf_tables:
+                table_name = str(r.get("table_name") or "")
+                if not table_name:
                     continue
-                
-                # 拼表名：crf_{event_code}_{crf_code}
-                table_name = f"crf_{event_val.lower()}_{crf_val.lower()}"
-                
-                # 尝试插入空行
+
+                # 2.2 只对“确实有 patient_id 字段”的表做初始化（避免误伤）
+                cols = await prisma.query_raw("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = DATABASE()
+                      AND table_name = ?
+                """, table_name) or []
+
+                colset = {str(c.get("column_name")).lower() for c in cols if c.get("column_name")}
+                if "patient_id" not in colset:
+                    continue
+
+                # 2.3 先检查该 patient_id 是否已存在，避免重复插入（不依赖唯一索引）
                 try:
-                    await prisma.execute_raw(f"INSERT INTO `{table_name}` (patient_id) VALUES (?)", new_id)
+                    exist = await prisma.query_raw(
+                        f"SELECT 1 FROM `{safe_ident(table_name)}` WHERE patient_id = ? LIMIT 1",
+                        new_id
+                    )
+                    if exist:
+                        continue
                 except Exception as inner_e:
-                    # 可能表不存在，或者已经有数据(极少见)，忽略错误继续下一个
+                    print(f"Check exist in {table_name} failed: {inner_e}")
+                    continue
+
+                row_id = str(uuid.uuid4())
+                try:
+                    if "id" in colset:
+                        await prisma.execute_raw(
+                            f"INSERT INTO `{safe_ident(table_name)}` (`id`, `patient_id`) VALUES (?, ?)",
+                            row_id, new_id
+                        )
+                    else:
+                        await prisma.execute_raw(
+                            f"INSERT INTO `{safe_ident(table_name)}` (`patient_id`) VALUES (?)",
+                            new_id
+                        )
+                except Exception as inner_e:
                     print(f"Init table {table_name} failed: {inner_e}")
 
+
         except Exception as e:
-            print(f"Failed to fetch structure or init tables: {e}")
-            # 注意：这里虽然子表初始化失败，但主表已经插入成功，
-            # 也可以选择回滚，但简单起见先返回成功，只需日志记录。
+            print(f"Failed to scan/init crf tables: {e}")
 
         return {"success": True, "id": new_id}
     except Exception as e:
