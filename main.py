@@ -522,9 +522,10 @@ async def create_patient(patient: PatientCreate):
                 # 拼表名：crf_{event_code}_{crf_code}
                 table_name = f"crf_{event_val.lower()}_{crf_val.lower()}"
                 
-                # 尝试插入空行
+                # 尝试插入空行（需要同时提供 id 和 patient_id）
                 try:
-                    await prisma.execute_raw(f"INSERT INTO `{table_name}` (patient_id) VALUES (?)", new_id)
+                    row_id = str(uuid.uuid4())
+                    await prisma.execute_raw(f"INSERT INTO `{table_name}` (id, patient_id) VALUES (?, ?)", row_id, new_id)
                 except Exception as inner_e:
                     # 可能表不存在，或者已经有数据(极少见)，忽略错误继续下一个
                     print(f"Init table {table_name} failed: {inner_e}")
